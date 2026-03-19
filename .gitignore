@@ -5,3 +5,6 @@ config
 data
 logs
 .DS_Store
+
+.dev-vite.log
+.dev-vite.pid
