@@ -1,0 +1,7 @@
+node_modules
+.build
+dist
+config
+data
+logs
+.DS_Store

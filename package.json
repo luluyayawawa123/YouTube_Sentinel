@@ -1,0 +1,72 @@
+{
+  "name": "youtube-sentinel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows YouTube update monitor with AI briefs and Telegram delivery.",
+  "main": ".build/main/main.js",
+  "author": "Codex",
+  "scripts": {
+    "dev:renderer": "vite --configLoader runner",
+    "dev:main": "tsup src/main/main.ts src/main/preload.ts src/worker/index.ts --format cjs --target node22 --out-dir .build --watch --sourcemap --external electron",
+    "dev": "npm run dev:renderer",
+    "build:renderer": "vite build",
+    "build:main": "tsup src/main/main.ts src/main/preload.ts src/worker/index.ts --format cjs --target node22 --out-dir .build --sourcemap --external electron",
+    "build": "npm run build:renderer && npm run build:main",
+    "package:dir": "electron-builder --dir",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.0",
+    "node-cron": "^4.2.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.12",
+    "esbuild-register": "^3.6.0",
+    "tsconfig-paths": "^4.2.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  },
+  "build": {
+    "appId": "com.codex.youtube-sentinel",
+    "productName": "YouTube Sentinel",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      ".build/**/*",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "scripts/register-task.bat",
+        "to": "."
+      },
+      {
+        "from": "scripts/unregister-task.bat",
+        "to": "."
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}
