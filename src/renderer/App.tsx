@@ -109,6 +109,7 @@ export function App() {
 
   useEffect(() => {
     void refreshAll();
+    void refreshSettings();
   }, []);
 
   useEffect(() => {
