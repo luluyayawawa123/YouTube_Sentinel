@@ -74,6 +74,7 @@ export function App() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const [logTotal, setLogTotal] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsDirty, setSettingsDirty] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResponse | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
   const [logPage, setLogPage] = useState(1);
@@ -149,7 +150,6 @@ export function App() {
       refreshRecentHistory(),
       refreshHistory(historyPage),
       refreshLogs(logPage),
-      refreshSettings(),
       refreshDiagnostics()
     ]);
   }
@@ -211,9 +211,21 @@ export function App() {
   async function refreshSettings(): Promise<void> {
     try {
       setSettings(await api<AppSettings>("/settings"));
+      setSettingsDirty(false);
     } catch (error) {
       setFeedbackState(getErrorMessage(error, "无法加载设置"), "error");
     }
+  }
+
+  function updateSettingsDraft(next: AppSettings | ((previous: AppSettings) => AppSettings)): void {
+    setSettings((previous) => {
+      if (typeof next === "function") {
+        return (next as (previous: AppSettings) => AppSettings)(previous);
+      }
+
+      return next;
+    });
+    setSettingsDirty(true);
   }
 
   async function refreshDiagnostics(): Promise<void> {
@@ -371,6 +383,7 @@ export function App() {
 
     try {
       await api("/settings", { method: "PUT", body: JSON.stringify(settings) });
+      setSettingsDirty(false);
       setFeedbackState("设置已保存。头像显示开关也需要保存后才会生效。", "success");
       await refreshSettings();
       await refreshDashboard();
@@ -725,10 +738,9 @@ export function App() {
                               <ChannelAvatar channel={channel} enabled={settings.ui.showChannelAvatars} />
                               <div className="row-copy">
                                 <h3>{channel.name || "未命名目标"}</h3>
-                                <p>{channel.canonicalUrl}</p>
+                                <p>{channel.originalUrl}</p>
                                 <div className="row-meta">
                                   <span>上次检查：{formatLocal(channel.lastCheckedAt)}</span>
-                                  <span>最近视频：{formatLocal(channel.lastVideoAt)}</span>
                                   {channel.lastError ? <span className="meta-error">错误：{channel.lastError}</span> : null}
                                 </div>
                               </div>
@@ -813,22 +825,37 @@ export function App() {
           )}
 
           {page === "settings" && (
-            <div className="page-grid settings-grid">              <section className="surface-card settings-card-surface">
-                <div className="surface-card-header split-header">
+            <div className="page-grid settings-grid">
+              <section className="surface-card settings-toolbar settings-card-wide">
+                <div className="surface-card-header split-header settings-toolbar-header">
+                  <div>
+                    <h2>设置变更</h2>
+                    <p>{settingsDirty ? "有未保存变更，点击右侧按钮后才会写入并按规则生效。" : "所有设置已保存，具体生效时机会继续通过右上角提示展示。"}</p>
+                  </div>
+                  <button className="primary-button" disabled={savingSettings || !settingsDirty} onClick={() => void saveSettingsAction()}>
+                    {savingSettings ? "保存中..." : "保存设置"}
+                  </button>
+                </div>
+              </section>
+              <section className="surface-card settings-card-surface">
+                <div className="surface-card-header">
                   <div>
                     <h2>监控设置</h2>
                     <p>控制执行频率、工作时间段，并保存到后台调度器。</p>
                   </div>
-                  <button className="primary-button" disabled={savingSettings} onClick={() => void saveSettingsAction()}>
+                  <button className="primary-button" disabled={savingSettings || !settingsDirty} onClick={() => void saveSettingsAction()}>
                     {savingSettings ? "保存中..." : "保存全部设置"}
                   </button>
+                </div>
+                <div className="surface-card-banner">
+                  {settingsDirty ? "有未保存变更，点击右上角保存后才会写入并按规则生效。" : "所有设置已保存，具体生效时机会继续通过右上角提示展示。"}
                 </div>
                 <div className="surface-card-body settings-form-grid">
                   <FieldBlock label="巡检频率（分钟）">
                     <select
                       value={String(settings.monitor.intervalMinutes)}
                       onChange={(event) =>
-                        setSettings((prev) => ({
+                        updateSettingsDraft((prev) => ({
                           ...prev,
                           monitor: { ...prev.monitor, intervalMinutes: Number(event.target.value) }
                         }))
@@ -850,7 +877,7 @@ export function App() {
                         type="checkbox"
                         checked={settings.monitor.workWindow.enabled}
                         onChange={(event) =>
-                          setSettings((prev) => ({
+                          updateSettingsDraft((prev) => ({
                             ...prev,
                             monitor: {
                               ...prev.monitor,
@@ -861,13 +888,14 @@ export function App() {
                       />
                       <span>{settings.monitor.workWindow.enabled ? "已启用" : "未启用"}</span>
                     </label>
+                    <small>仅在该时间段内执行巡检与推送。</small>
                   </FieldBlock>
                   <FieldBlock label="开始时间">
                     <input
                       type="time"
                       value={settings.monitor.workWindow.start}
                       onChange={(event) =>
-                        setSettings((prev) => ({
+                        updateSettingsDraft((prev) => ({
                           ...prev,
                           monitor: {
                             ...prev.monitor,
@@ -882,7 +910,7 @@ export function App() {
                       type="time"
                       value={settings.monitor.workWindow.end}
                       onChange={(event) =>
-                        setSettings((prev) => ({
+                        updateSettingsDraft((prev) => ({
                           ...prev,
                           monitor: {
                             ...prev.monitor,
@@ -904,17 +932,17 @@ export function App() {
                 </div>
                 <div className="surface-card-body settings-form-grid">
                   <FieldBlock label="AI Base URL">
-                    <input value={settings.ai.baseUrl} onChange={(event) => setSettings((prev) => ({ ...prev, ai: { ...prev.ai, baseUrl: event.target.value } }))} />
+                    <input value={settings.ai.baseUrl} onChange={(event) => updateSettingsDraft((prev) => ({ ...prev, ai: { ...prev.ai, baseUrl: event.target.value } }))} />
                   </FieldBlock>
                   <FieldBlock label="AI 模型">
-                    <input value={settings.ai.model} onChange={(event) => setSettings((prev) => ({ ...prev, ai: { ...prev.ai, model: event.target.value } }))} />
+                    <input value={settings.ai.model} onChange={(event) => updateSettingsDraft((prev) => ({ ...prev, ai: { ...prev.ai, model: event.target.value } }))} />
                   </FieldBlock>
                   <SensitiveField
                     label="AI API Key"
                     value={settings.ai.apiKey}
                     visible={secretVisibility.aiApiKey}
                     placeholder="请输入 AI API Key"
-                    onChange={(value) => setSettings((prev) => ({ ...prev, ai: { ...prev.ai, apiKey: value } }))}
+                    onChange={(value) => updateSettingsDraft((prev) => ({ ...prev, ai: { ...prev.ai, apiKey: value } }))}
                     onToggle={() => setSecretVisibility((prev) => ({ ...prev, aiApiKey: !prev.aiApiKey }))}
                   />
                 </div>
@@ -938,7 +966,7 @@ export function App() {
                     value={settings.telegram.botToken}
                     visible={secretVisibility.telegramBotToken}
                     placeholder="请输入 Telegram Bot Token"
-                    onChange={(value) => setSettings((prev) => ({ ...prev, telegram: { ...prev.telegram, botToken: value } }))}
+                    onChange={(value) => updateSettingsDraft((prev) => ({ ...prev, telegram: { ...prev.telegram, botToken: value } }))}
                     onToggle={() => setSecretVisibility((prev) => ({ ...prev, telegramBotToken: !prev.telegramBotToken }))}
                   />
                   <SensitiveField
@@ -946,7 +974,7 @@ export function App() {
                     value={settings.telegram.chatId}
                     visible={secretVisibility.telegramChatId}
                     placeholder="请输入 Telegram Chat ID"
-                    onChange={(value) => setSettings((prev) => ({ ...prev, telegram: { ...prev.telegram, chatId: value } }))}
+                    onChange={(value) => updateSettingsDraft((prev) => ({ ...prev, telegram: { ...prev.telegram, chatId: value } }))}
                     onToggle={() => setSecretVisibility((prev) => ({ ...prev, telegramChatId: !prev.telegramChatId }))}
                   />
                 </div>
@@ -971,7 +999,7 @@ export function App() {
                         type="checkbox"
                         checked={settings.ui.showChannelAvatars}
                         onChange={(event) =>
-                          setSettings((prev) => ({
+                          updateSettingsDraft((prev) => ({
                             ...prev,
                             ui: { ...prev.ui, showChannelAvatars: event.target.checked }
                           }))
@@ -1006,7 +1034,7 @@ export function App() {
                   <FieldBlock label="历史保留时间范围">
                     <select
                       value={String(settings.history.retentionDays)}
-                      onChange={(event) => setSettings((prev) => ({ ...prev, history: { ...prev.history, retentionDays: Number(event.target.value) } }))}
+                      onChange={(event) => updateSettingsDraft((prev) => ({ ...prev, history: { ...prev.history, retentionDays: Number(event.target.value) } }))}
                     >
                       {HISTORY_CLEANUP_OPTIONS.map((option) => (
                         <option key={option.days} value={option.days}>

@@ -507,6 +507,14 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.settings-toolbar {
+  overflow: visible;
+}
+
+.settings-toolbar-header {
+  align-items: center;
+}
+
 .surface-card {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border);
@@ -549,6 +557,22 @@ textarea {
 
 .surface-card-body {
   padding: 0 16px 16px;
+}
+
+.surface-card-banner {
+  margin: 0 16px 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fffdf7 0%, #fff9ec 100%);
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-toolbar + .settings-card-surface .primary-button,
+.settings-toolbar + .settings-card-surface .surface-card-banner {
+  display: none;
 }
 
 .surface-card-footer {

@@ -17,6 +17,11 @@ export function formatLocal(dateLike: string | null): string {
   }).format(date);
 }
 
+export function formatLocalDateTime(dateLike: string | null, fallback = "--"): string {
+  const formatted = formatLocal(dateLike);
+  return formatted === "--" ? fallback : formatted;
+}
+
 export function maskSecret(value: string): string {
   if (!value) {
     return "";

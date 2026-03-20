@@ -4,7 +4,7 @@ import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AppSettings, Channel, DiagnosticsResponse } from "@shared/types";
 import { HISTORY_CLEANUP_OPTIONS } from "@shared/constants";
-import { makeId } from "@shared/utils";
+import { formatLocalDateTime, makeId } from "@shared/utils";
 import type { RuntimePaths } from "@worker/runtime";
 import { Storage } from "@worker/storage";
 import { createAiBrief, testAiConnection } from "@worker/integrations/ai";
@@ -265,7 +265,7 @@ export class WorkerService {
 
     const message = [
       `[${channel.name}] ${metadata.title}`,
-      `发布时间：${metadata.publishedAt}`,
+      `发布时间：${formatLocalDateTime(metadata.publishedAt)}`,
       `摘要：${brief.summary}`,
       "",
       ...brief.keyPoints.map((item, index) => `${index + 1}. ${item}`),
