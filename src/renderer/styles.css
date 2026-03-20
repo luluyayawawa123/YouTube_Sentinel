@@ -515,6 +515,11 @@ textarea {
   align-items: center;
 }
 
+.settings-warning-text {
+  color: var(--danger) !important;
+  font-weight: 600;
+}
+
 .surface-card {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border);

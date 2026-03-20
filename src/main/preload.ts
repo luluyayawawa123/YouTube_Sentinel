@@ -1,6 +1,6 @@
-import { contextBridge } from "electron";
+import { app, contextBridge } from "electron";
 
 contextBridge.exposeInMainWorld("desktop", {
-  version: process.versions.electron,
+  version: app.getVersion(),
   openExternal: (url: string) => window.open(url, "_blank")
 });

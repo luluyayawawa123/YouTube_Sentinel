@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { DEFAULT_PORT, HISTORY_CLEANUP_OPTIONS, INTERVAL_PRESETS } from "@shared/constants";
 import type { AppSettings, Channel, DashboardResponse, DiagnosticStatus, DiagnosticsResponse, HistoryRecord, LogRecord } from "@shared/types";
 import { formatLocal, maskSecret } from "@shared/utils";
+import packageInfo from "../../package.json";
 
 const API_BASE = `http://127.0.0.1:${DEFAULT_PORT}`;
 const CHANNEL_PAGE_SIZE = 8;
@@ -830,7 +831,9 @@ export function App() {
                 <div className="surface-card-header split-header settings-toolbar-header">
                   <div>
                     <h2>设置变更</h2>
-                    <p>{settingsDirty ? "有未保存变更，点击右侧按钮后才会写入并按规则生效。" : "所有设置已保存，具体生效时机会继续通过右上角提示展示。"}</p>
+                    <p className={settingsDirty ? "settings-warning-text" : undefined}>
+                      {settingsDirty ? "有未保存变更，点击右侧按钮后才会写入并按规则生效。" : "所有设置已保存，具体生效时机会继续通过右上角提示展示。"}
+                    </p>
                   </div>
                   <button className="primary-button" disabled={savingSettings || !settingsDirty} onClick={() => void saveSettingsAction()}>
                     {savingSettings ? "保存中..." : "保存设置"}
@@ -1082,7 +1085,7 @@ export function App() {
         </main>
 
         <footer className="workspace-footer">
-          <span>油管哨兵 v{window.desktop?.version ?? "--"}</span>
+          <span>油管哨兵 v{window.desktop?.version || packageInfo.version || "--"}</span>
           <span>监控 YouTube 目标、生成摘要并推送到 Telegram。</span>
         </footer>
       </div>
