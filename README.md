@@ -3,6 +3,8 @@
 一款面向 Windows 的 YouTube 更新监控工具。  
 它会在后台定时巡检你指定的 YouTube 目标，发现新视频后尽量提取字幕或元数据，调用 AI 生成中文摘要，并通过 Telegram 推送给你。
 
+![软件截图](assets/jietu.png)
+
 ## 软件能做什么
 
 - 监控多个 YouTube 目标，支持批量添加
