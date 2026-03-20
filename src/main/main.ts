@@ -44,6 +44,10 @@ if (isWorkerMode) {
       }
     });
 
+    window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+      writeAppLog(`renderer load failed: ${errorCode} ${errorDescription} ${validatedURL}`);
+    });
+
     const devUrl = process.env.VITE_DEV_SERVER_URL;
     if (devUrl) {
       await window.loadURL(devUrl);
@@ -78,13 +82,17 @@ function isAddressInUseError(error: unknown): boolean {
 }
 
 function writeWorkerStartupLog(message: string): void {
+  writeAppLog(message, "worker-startup.log");
+}
+
+function writeAppLog(message: string, fileName = "app.log"): void {
   try {
     const rootDir = app.isPackaged ? process.execPath.replace(/\\[^\\]+$/, "") : process.cwd();
     const logsDir = join(rootDir, "logs");
     mkdirSync(logsDir, { recursive: true });
-    appendFileSync(join(logsDir, "worker-startup.log"), `[${new Date().toISOString()}] ${message}\n`, "utf8");
+    appendFileSync(join(logsDir, fileName), `[${new Date().toISOString()}] ${message}\n`, "utf8");
   } catch {
-    // Ignore logging failures. They must never block worker startup.
+    // Ignore logging failures. They must never block startup.
   }
 }
 

@@ -9,7 +9,7 @@
     "dev:renderer": "vite --configLoader runner",
     "dev:main": "tsup src/main/main.ts src/main/preload.ts src/worker/index.ts --format cjs --target node22 --out-dir .build --watch --sourcemap --external electron",
     "dev": "npm run dev:renderer",
-    "build:renderer": "vite build",
+    "build:renderer": "vite build --base ./",
     "build:main": "tsup src/main/main.ts src/main/preload.ts src/worker/index.ts --format cjs --target node22 --out-dir .build --sourcemap --external electron",
     "build": "npm run build:renderer && npm run build:main",
     "package:dir": "electron-builder --dir",
@@ -44,23 +44,6 @@
     "files": [
       ".build/**/*",
       "package.json"
-    ],
-    "extraFiles": [
-      {
-        "from": "bin",
-        "to": "bin",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "scripts/register-task.bat",
-        "to": "."
-      },
-      {
-        "from": "scripts/unregister-task.bat",
-        "to": "."
-      }
     ],
     "win": {
       "signAndEditExecutable": false,
