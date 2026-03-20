@@ -1113,6 +1113,12 @@ function SidebarStatusCard(props: { label: string; value: string; hint?: string;
 
 function ChannelAvatar(props: { channel: Channel; enabled: boolean }) {
   const [failed, setFailed] = useState(false);
+  const avatarVersion = props.channel.avatarUpdatedAt ?? "";
+  const avatarSrc = `${API_BASE}/channels/${props.channel.id}/avatar${avatarVersion ? `?v=${encodeURIComponent(avatarVersion)}` : ""}`;
+
+  useEffect(() => {
+    setFailed(false);
+  }, [props.channel.id, props.enabled, avatarVersion]);
 
   if (!props.enabled || !props.channel.avatarUpdatedAt || failed) {
     return <div className="row-avatar">▶</div>;
@@ -1122,7 +1128,7 @@ function ChannelAvatar(props: { channel: Channel; enabled: boolean }) {
     <div className="row-avatar avatar-image-wrap">
       <img
         className="channel-avatar-image"
-        src={`${API_BASE}/channels/${props.channel.id}/avatar`}
+        src={avatarSrc}
         alt={props.channel.name}
         onError={() => setFailed(true)}
       />
