@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, net, session, shell } from "electron";
 import { startWorkerServer } from "@worker/index";
 
 const isWorkerMode = process.argv.includes("--worker");
@@ -10,6 +10,7 @@ if (isWorkerMode) {
   app.whenReady()
     .then(async () => {
       writeWorkerStartupLog("worker mode ready");
+      await enableSystemProxyFetch();
       await startWorkerServer();
       writeWorkerStartupLog("worker server started");
     })
@@ -83,6 +84,19 @@ function isAddressInUseError(error: unknown): boolean {
 
 function writeWorkerStartupLog(message: string): void {
   writeAppLog(message, "worker-startup.log");
+}
+
+async function enableSystemProxyFetch(): Promise<void> {
+  try {
+    await session.defaultSession.setProxy({ mode: "system" });
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof URL ? input.toString() : input;
+      return net.fetch(request as RequestInfo, init);
+    }) as typeof fetch;
+    writeWorkerStartupLog("system proxy fetch enabled");
+  } catch (error) {
+    writeWorkerStartupLog(`system proxy fetch setup failed: ${formatError(error)}`);
+  }
 }
 
 function writeAppLog(message: string, fileName = "app.log"): void {
