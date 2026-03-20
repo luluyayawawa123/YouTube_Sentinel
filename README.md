@@ -24,35 +24,32 @@
 
 下载后直接解压，不需要安装。
 
-### 2. 首次使用步骤
+### 2. 正确的首次使用顺序
+
+这个软件依赖后台先正常工作。  
+**请先注册开机自启任务，再打开前台界面。**
+
+正确顺序如下：
 
 1. 把压缩包解压到一个固定目录，例如 `D:\YouTube Sentinel`
-2. 确认目录里有 `YouTube Sentinel.exe`
-3. 把 `yt-dlp.exe` 放到根目录的 `bin` 文件夹中
-4. 双击运行 `YouTube Sentinel.exe`
-5. 打开“设置与诊断”，填写：
+2. 右键以管理员身份运行 `register-task.bat`
+3. 注册完成后，再启动 `YouTube Sentinel.exe`
+4. 打开“设置与诊断”，填写：
    - AI Base URL
    - AI API Key
    - AI 模型
    - Telegram Bot Token
    - Telegram Chat ID
-6. 点击“保存设置”
-7. 先测试 AI 和 Telegram
-8. 添加 YouTube 目标
-9. 手动执行一次巡检，确认整条链路正常
+5. 点击“保存设置”
+6. 先测试 AI 和 Telegram
+7. 添加 YouTube 目标
+8. 手动执行一次巡检，确认整条链路正常
 
-### 3. 如何开机自动后台运行
+### 3. 如何取消开机自动后台运行
 
-绿色版根目录自带两个脚本：
+如果你不再需要开机自启：
 
-- `register-task.bat`
-- `unregister-task.bat`
-
-使用方法：
-
-1. 右键以管理员身份运行 `register-task.bat`
-2. 这样系统启动时会自动拉起后台 worker
-3. 如果不再需要开机自启，右键以管理员身份运行 `unregister-task.bat`
+1. 右键以管理员身份运行 `unregister-task.bat`
 
 说明：
 
@@ -84,7 +81,7 @@ YouTube Sentinel/
 
 - `bin/`
   - 放运行依赖的二进制文件
-  - 当前必须放 `yt-dlp.exe`
+  - 正常发布包里已经包含所需文件
 - `config/settings.json`
   - 软件设置文件
   - 保存监控频率、AI、Telegram、界面开关等配置
@@ -140,7 +137,6 @@ YouTube Sentinel/
 
 - Windows
 - Node.js 22
-- `bin/yt-dlp.exe`
 
 ### 开发版启动方式
 
