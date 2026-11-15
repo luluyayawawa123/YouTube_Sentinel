@@ -2,18 +2,22 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { execFile } from "node:child_process";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
-import type { AppSettings, Channel, DiagnosticsResponse } from "@shared/types";
-import { HISTORY_CLEANUP_OPTIONS } from "@shared/constants";
+import type { AppSettings, Channel, CleanupCategory, CleanupResult, DiagnosticStatus, DiagnosticsResponse } from "@shared/types";
+import { CLEANUP_RANGE_OPTIONS } from "@shared/constants";
 import { formatLocalDateTime, makeId } from "@shared/utils";
 import type { RuntimePaths } from "@worker/runtime";
 import { Storage } from "@worker/storage";
 import { createAiBrief, testAiConnection } from "@worker/integrations/ai";
 import { sendTelegramMessage } from "@worker/integrations/telegram";
-import { fetchLatestTargetEntries, fetchSubtitleText, getVideoMetadata, resolveChannelInfo } from "@worker/integrations/ytdlp";
+import { diagnoseYtDlp, fetchLatestTargetEntries, fetchSubtitleText, getVideoMetadata, resolveChannelInfo } from "@worker/integrations/ytdlp";
+import { checkYoutubeLogin, getYoutubeLoginStatus, LOGIN_DIAGNOSTIC_NAMES, youtubeLoginDiagnostics } from "@worker/integrations/youtube-login";
+import { cleanupTextLogs } from "@worker/log-cleanup";
 
 const execFileAsync = promisify(execFile);
 
 export class WorkerService {
+  private cleaningRecords = false;
+  private readonly avatarFetches = new Map<string, Promise<boolean>>();
   constructor(
     private readonly storage: Storage,
     private readonly paths: RuntimePaths,
@@ -42,15 +46,20 @@ export class WorkerService {
       lastCheckedAt: current?.lastCheckedAt ?? null,
       lastVideoAt: current?.lastVideoAt ?? null,
       lastError: current?.lastError ?? null,
-      avatarPath: current?.avatarPath ?? null,
-      avatarUpdatedAt: current?.avatarUpdatedAt ?? null
+      avatarPath: current?.channelId === resolved.channelId ? current.avatarPath : null,
+      avatarUpdatedAt: current?.channelId === resolved.channelId ? current.avatarUpdatedAt : null
     };
 
     this.storage.upsertChannel(channel);
+    if (!channel.avatarPath || !existsSync(join(this.paths.avatarsDir, channel.avatarPath))) {
+      const cached = await this.cacheChannelAvatar(channel, resolved.avatarUrl);
+      if (!cached) this.writeLog("system", "info", `${channel.name} 已保存，头像获取暂未成功。`);
+    }
     return this.storage.getChannel(channel.id) ?? channel;
   }
 
   async syncAllChannels(source: "manual" | "scheduled" = "manual"): Promise<void> {
+    await checkYoutubeLogin(this.paths);
     const channels = this.storage.listChannels().filter((item) => item.enabled);
     let discoveredCount = 0;
     let unchangedCount = 0;
@@ -61,16 +70,14 @@ export class WorkerService {
 
     for (const channel of channels) {
       try {
-        const count = await this.syncSingleChannel(channel.id, source);
+        const count = await this.syncSingleChannel(channel.id, source, false);
         if (count > 0) {
           discoveredCount += count;
         } else {
           unchangedCount += 1;
         }
-      } catch (error) {
+      } catch {
         failedCount += 1;
-        const detail = error instanceof Error ? error.message : "\u5de1\u68c0\u5931\u8d25";
-        this.writeLog(source, "error", `${channel.name}\uff1a${detail}`);
       }
     }
 
@@ -87,7 +94,6 @@ export class WorkerService {
 
     this.storage.setRuntimeValue("lastRunAt", new Date().toISOString());
     this.storage.setRuntimeValue("lastRunOutcome", lastOutcome);
-    this.storage.cleanupExpiredHistory();
     this.writeLog(
       source,
       channels.length === 0 ? "info" : failedCount > 0 ? "error" : "success",
@@ -95,14 +101,16 @@ export class WorkerService {
     );
   }
 
-  async syncSingleChannel(channelId: string, source: "manual" | "scheduled" = "manual"): Promise<number> {
+  async syncSingleChannel(channelId: string, source: "manual" | "scheduled" = "manual", checkLogin = true): Promise<number> {
     const channel = this.storage.getChannel(channelId);
     if (!channel) {
       throw new Error("目标不存在");
     }
+    if (checkLogin) await checkYoutubeLogin(this.paths);
 
     this.writeLog(source, "info", `开始检查目标：${channel.name}`);
 
+    try {
     const entries = await fetchLatestTargetEntries(this.paths, channel.originalUrl, 1);
     const latestEntry = entries[0];
 
@@ -120,6 +128,16 @@ export class WorkerService {
     await this.processVideo(channel, latestEntry);
     this.writeLog(source, "success", `${channel.name}：发现并处理了最新视频《${latestEntry.title}》`);
     return 1;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "目标巡检失败";
+      this.storage.updateChannelRuntime(channel.id, {
+        lastCheckedAt: new Date().toISOString(),
+        lastVideoAt: this.storage.getChannel(channel.id)?.lastVideoAt ?? channel.lastVideoAt,
+        lastError: detail
+      });
+      this.writeLog(source, "error", `${channel.name}：${detail}`);
+      throw error;
+    }
   }
 
   async testAi(): Promise<string> {
@@ -133,16 +151,6 @@ export class WorkerService {
     );
   }
 
-  cleanupHistoryByDays(days: number): void {
-    const option = HISTORY_CLEANUP_OPTIONS.find((item) => item.days === days);
-    if (!option) {
-      throw new Error("不支持的清理范围");
-    }
-
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-    this.storage.cleanupHistoryBefore(cutoff);
-  }
-
   async clearAvatarCache(): Promise<number> {
     mkdirSync(this.paths.avatarsDir, { recursive: true });
     const files = readdirSync(this.paths.avatarsDir);
@@ -151,6 +159,18 @@ export class WorkerService {
     }
     this.storage.clearChannelAvatars();
     return files.length;
+  }
+
+  async cleanupRecords(category: CleanupCategory, days: number): Promise<CleanupResult> {
+    if (!["push", "execution", "runtime", "all"].includes(category) || !CLEANUP_RANGE_OPTIONS.some((option) => option.days === days)) throw new Error("清理类别或保留范围无效。");
+    if (this.cleaningRecords) throw new Error("已有清理任务正在执行。");
+    this.cleaningRecords = true;
+    try {
+      const cutoff = days === 0 ? null : new Date(Date.now() - days * 86400000).toISOString();
+      const counts = this.storage.cleanupRecords(category, cutoff);
+      const text = category === "runtime" || category === "all" ? await cleanupTextLogs(this.paths.logsDir, cutoff) : { files: 0, lines: 0, warnings: [] };
+      return { ...counts, textFiles: text.files, textLines: text.lines, warnings: text.warnings };
+    } finally { this.cleaningRecords = false; }
   }
 
   async refreshAllChannelAvatars(): Promise<{ updated: number; failed: number; skipped: number }> {
@@ -182,8 +202,13 @@ export class WorkerService {
     return { updated, failed, skipped };
   }
 
-  getAvatarFile(channelId: string): { contentType: string; buffer: Buffer } | null {
-    const channel = this.storage.getChannel(channelId);
+  async getAvatarFile(channelId: string): Promise<{ contentType: string; buffer: Buffer } | null> {
+    let channel = this.storage.getChannel(channelId);
+    if (!channel) return null;
+    if (!channel.avatarPath || !existsSync(join(this.paths.avatarsDir, channel.avatarPath))) {
+      await this.cacheChannelAvatar(channel);
+      channel = this.storage.getChannel(channelId);
+    }
     if (!channel?.avatarPath) {
       return null;
     }
@@ -202,7 +227,10 @@ export class WorkerService {
 
   async getDiagnostics(): Promise<DiagnosticsResponse> {
     return {
-      items: this.storage.getDiagnostics(),
+      items: [
+        ...this.storage.getDiagnostics().filter((item) => !LOGIN_DIAGNOSTIC_NAMES.includes(item.name)),
+        ...youtubeLoginDiagnostics(getYoutubeLoginStatus(this.paths))
+      ],
       taskInfo: await getTaskInfo(this.paths.rootDir)
     };
   }
@@ -211,13 +239,29 @@ export class WorkerService {
     return getTaskInfo(this.paths.rootDir);
   }
 
-  async runDiagnostics(): Promise<DiagnosticsResponse> {
-    const items = await Promise.all([
-      diagnose("出口 IP / whatismyip", "https://www.whatismyip.com.tw"),
-      diagnose("出口 IP / dnsleaktest", "https://www.dnsleaktest.com"),
-      diagnose("Google 连通性", "https://www.google.com"),
-      diagnose("YouTube 连通性", "https://www.youtube.com")
+  async runDiagnostics(onProgress?: (item: DiagnosticStatus) => void): Promise<DiagnosticsResponse> {
+    const startedAt = Date.now();
+    const network = [
+      ["出口 IP / whatismyip", "https://www.whatismyip.com.tw"],
+      ["出口 IP / dnsleaktest", "https://www.dnsleaktest.com"],
+      ["Google 连通性", "https://www.google.com"],
+      ["YouTube 连通性", "https://www.youtube.com"]
+    ].map(async ([name, url]) => {
+      const item = await diagnose(name, url);
+      onProgress?.(item);
+      return item;
+    });
+    const [items, dependencies, login] = await Promise.all([
+      Promise.all(network), diagnoseYtDlp(this.paths, onProgress),
+      checkYoutubeLogin(this.paths, (result) => {
+        const cookieItem = youtubeLoginDiagnostics(result, Date.now() - startedAt)[1];
+        if (cookieItem) onProgress?.(cookieItem);
+      }).then((result) => {
+        for (const item of youtubeLoginDiagnostics(result, Date.now() - startedAt)) onProgress?.(item);
+        return result;
+      })
     ]);
+    items.push(...dependencies, ...youtubeLoginDiagnostics(login, Date.now() - startedAt));
 
     const response = { items, taskInfo: await getTaskInfo(this.paths.rootDir) };
     this.storage.saveDiagnostics(response);
@@ -304,7 +348,7 @@ export class WorkerService {
         status: "success",
         summary: message.slice(0, 500),
         createdAt: new Date().toISOString(),
-        expireAt: futureIso(this.settings.history.retentionDays)
+        expireAt: "9999-12-31T23:59:59.000Z"
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "未知推送错误";
@@ -325,7 +369,7 @@ export class WorkerService {
         status: "failed",
         summary: detail,
         createdAt: new Date().toISOString(),
-        expireAt: futureIso(this.settings.history.retentionDays)
+        expireAt: "9999-12-31T23:59:59.000Z"
       });
       throw error;
     }
@@ -364,8 +408,9 @@ export class WorkerService {
     }
 
     try {
-      const response = await fetch(avatarUrl);
+      const response = await fetch(avatarUrl, { signal: AbortSignal.timeout(15000) });
       if (!response.ok) {
+        this.writeLog("system", "error", `头像下载失败：HTTP ${response.status}，目标 ${channelId}`);
         return false;
       }
 
@@ -390,10 +435,28 @@ export class WorkerService {
       writeFileSync(filePath, buffer);
       this.storage.updateChannelAvatar(channelId, fileName, new Date().toISOString());
       return true;
-    } catch {
-      // Avatar caching is best-effort and must never block the main workflow.
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.writeLog("system", "error", `头像下载失败，目标 ${channelId}：${detail.slice(0, 200)}`);
       return false;
     }
+  }
+
+  private async cacheChannelAvatar(channel: Channel, avatarUrl?: string | null): Promise<boolean> {
+    const pending = this.avatarFetches.get(channel.id);
+    if (pending) return pending;
+    const task = (async () => {
+      try {
+        const url = avatarUrl || (await resolveChannelInfo(this.paths, channel.canonicalUrl)).avatarUrl;
+        if (!url) { this.writeLog("system", "info", `${channel.name} 的频道信息暂未返回头像地址。`); return false; }
+        return await this.refreshChannelAvatar(channel.id, url);
+      } catch (error) {
+        this.writeLog("system", "error", `${channel.name} 头像获取失败：${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    })();
+    this.avatarFetches.set(channel.id, task);
+    try { return await task; } finally { this.avatarFetches.delete(channel.id); }
   }
 }
 
@@ -478,10 +541,6 @@ function decodeHtml(text: string): string {
     .replace(/&#39;/gi, "'")
     .replace(/&quot;/gi, '"')
     .trim();
-}
-
-function futureIso(days: number): string {
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
 function wait(ms: number): Promise<void> {

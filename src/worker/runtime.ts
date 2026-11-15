@@ -74,10 +74,6 @@ export function loadSettings(paths: RuntimePaths): AppSettings {
       ...DEFAULT_SETTINGS.telegram,
       ...parsed.telegram
     },
-    history: {
-      ...DEFAULT_SETTINGS.history,
-      ...parsed.history
-    },
     ui: {
       ...DEFAULT_SETTINGS.ui,
       ...parsed.ui

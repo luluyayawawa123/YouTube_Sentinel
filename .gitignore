@@ -8,3 +8,7 @@ logs
 
 .dev-vite.log
 .dev-vite.pid
+.test-output/
+scripts/test-electron-cookie.cjs
+scripts/test-public-video.cjs
+scripts/test-settings-ui.cjs

@@ -1,4 +1,14 @@
 ﻿export const DEFAULT_PORT = 42777;
+export const DIAGNOSTIC_NAMES = [
+  "出口 IP / whatismyip", "出口 IP / dnsleaktest", "Google 连通性", "YouTube 连通性",
+  "yt-dlp", "Deno 运行时", "YouTube 登录状态", "Firefox Cookies 读取"
+] as const;
+export const CLEANUP_CATEGORIES = [
+  { value: "push", label: "推送记录", detail: "推送历史、发送结果及失败明细" },
+  { value: "execution", label: "执行日志", detail: "手动巡检、定时巡检、推送及报错日志" },
+  { value: "runtime", label: "文本运行日志", detail: "logs 目录中的启动及运行日志；无日期的内容会保留" },
+  { value: "all", label: "全部记录与日志", detail: "以上三类一起清理" }
+] as const;
 export const DEFAULT_SETTINGS = {
   monitor: {
     intervalMinutes: 15,
@@ -17,16 +27,13 @@ export const DEFAULT_SETTINGS = {
     botToken: "",
     chatId: ""
   },
-  history: {
-    retentionDays: 365 * 3
-  },
   ui: {
     showChannelAvatars: false
   }
 } as const;
 
-export const HISTORY_CLEANUP_OPTIONS = [
-  { label: "全部", days: 0 },
+export const CLEANUP_RANGE_OPTIONS = [
+  { label: "清空全部", days: 0 },
   { label: "保留最近 7 天", days: 7 },
   { label: "保留最近 1 个月", days: 30 },
   { label: "保留最近 3 个月", days: 90 },

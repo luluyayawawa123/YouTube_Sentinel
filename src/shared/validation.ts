@@ -23,9 +23,6 @@ export const settingsSchema = z.object({
     botToken: z.string(),
     chatId: z.string()
   }),
-  history: z.object({
-    retentionDays: z.number().int().min(0).max(3650)
-  }),
   ui: z.object({
     showChannelAvatars: z.boolean()
   })

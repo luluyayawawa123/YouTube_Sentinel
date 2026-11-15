@@ -75,10 +75,6 @@ export interface TelegramSettings {
   chatId: string;
 }
 
-export interface HistorySettings {
-  retentionDays: number;
-}
-
 export interface UiSettings {
   showChannelAvatars: boolean;
 }
@@ -87,7 +83,6 @@ export interface AppSettings {
   monitor: MonitorSettings;
   ai: AiSettings;
   telegram: TelegramSettings;
-  history: HistorySettings;
   ui: UiSettings;
 }
 
@@ -105,7 +100,7 @@ export interface DashboardResponse {
 
 export interface DiagnosticStatus {
   name: string;
-  status: "ok" | "error" | "timeout";
+  status: "ok" | "error" | "timeout" | "unknown" | "running";
   detail: string;
   checkedAt: string;
   durationMs: number;
@@ -127,6 +122,29 @@ export interface DiagnosticsResponse {
     lastRunTime: string;
     lastResult: string;
   };
+}
+
+export interface YoutubeLoginStatus {
+  cookies: "normal" | "unavailable" | "unknown";
+  login: "logged_in" | "not_logged_in" | "verification_required" | "unknown";
+  detail: string;
+  checkedAt: string | null;
+}
+
+export interface FirefoxProfiles {
+  profiles: Array<{ name: string; path: string; isDefault: boolean }>;
+  selectedPath: string | null;
+  automaticPath: string | null;
+}
+
+export type CleanupCategory = "push" | "execution" | "runtime" | "all";
+export interface CleanupResult {
+  history: number;
+  deliveries: number;
+  execution: number;
+  textFiles: number;
+  textLines: number;
+  warnings: string[];
 }
 
 export interface ApiResponse<T> {

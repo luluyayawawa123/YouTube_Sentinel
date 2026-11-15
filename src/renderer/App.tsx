@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { DEFAULT_PORT, HISTORY_CLEANUP_OPTIONS, INTERVAL_PRESETS } from "@shared/constants";
-import type { AppSettings, Channel, DashboardResponse, DiagnosticStatus, DiagnosticsResponse, HistoryRecord, LogRecord } from "@shared/types";
+import { CLEANUP_CATEGORIES, CLEANUP_RANGE_OPTIONS, DEFAULT_PORT, DIAGNOSTIC_NAMES, INTERVAL_PRESETS } from "@shared/constants";
+import { useRef } from "react";
+import { formatCleanupSummary } from "@shared/cleanup-summary";
+import type { AppSettings, Channel, CleanupCategory, CleanupResult, DashboardResponse, DiagnosticStatus, DiagnosticsResponse, FirefoxProfiles, HistoryRecord, LogRecord } from "@shared/types";
 import { formatLocal, maskSecret } from "@shared/utils";
 import packageInfo from "../../package.json";
 
@@ -41,9 +43,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   telegram: {
     botToken: "",
     chatId: ""
-  },
-  history: {
-    retentionDays: 365 * 3
   },
   ui: {
     showChannelAvatars: false
@@ -95,6 +94,11 @@ export function App() {
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [testingAi, setTestingAi] = useState(false);
   const [runningDiagnostics, setRunningDiagnostics] = useState(false);
+  const diagnosticsRunRef = useRef(false);
+  const [cleanupCategory, setCleanupCategory] = useState<CleanupCategory>("execution");
+  const [cleanupDays, setCleanupDays] = useState(30);
+  const [firefoxProfiles, setFirefoxProfiles] = useState<FirefoxProfiles | null>(null);
+  const [savingFirefoxProfile, setSavingFirefoxProfile] = useState(false);
   const [cleaningHistory, setCleaningHistory] = useState(false);
   const [rowAction, setRowAction] = useState<{ type: "sync" | "delete"; id: string } | null>(null);
   const [channelForm, setChannelForm] = useState<ChannelFormState>(EMPTY_CHANNEL_FORM);
@@ -141,7 +145,7 @@ export function App() {
     }
 
     if (page === "settings") {
-      void Promise.allSettled([refreshSettings(), refreshDiagnostics()]);
+      void Promise.allSettled([refreshSettings(), refreshDiagnostics(), refreshFirefoxProfiles()]);
     }
   }, [page, historyPage, logPage]);
 
@@ -219,6 +223,21 @@ export function App() {
     }
   }
 
+  async function refreshFirefoxProfiles(): Promise<void> {
+    try { setFirefoxProfiles(await api<FirefoxProfiles>("/firefox-profiles")); }
+    catch (error) { setFeedbackState(getErrorMessage(error, "无法读取 Firefox 配置列表"), "error"); }
+  }
+
+  async function selectFirefoxProfile(profilePath: string): Promise<void> {
+    setSavingFirefoxProfile(true);
+    try {
+      setFirefoxProfiles(await api<FirefoxProfiles>("/firefox-profiles", { method: "PUT", body: JSON.stringify({ profilePath: profilePath || null }) }));
+      setFeedbackState("Firefox 配置已保存，后台立即沿用。点击运行诊断确认登录状态。", "success");
+      await refreshDiagnostics();
+    } catch (error) { setFeedbackState(getErrorMessage(error, "保存 Firefox 配置失败"), "error"); }
+    finally { setSavingFirefoxProfile(false); }
+  }
+
   function updateSettingsDraft(next: AppSettings | ((previous: AppSettings) => AppSettings)): void {
     setSettings((previous) => {
       if (typeof next === "function") {
@@ -231,8 +250,10 @@ export function App() {
   }
 
   async function refreshDiagnostics(): Promise<void> {
+    if (diagnosticsRunRef.current) return;
     try {
-      setDiagnostics(await api<DiagnosticsResponse>("/diagnostics"));
+      const result = await api<DiagnosticsResponse>("/diagnostics");
+      if (!diagnosticsRunRef.current) setDiagnostics(result);
     } catch (error) {
       setFeedbackState(getErrorMessage(error, "无法读取诊断结果"), "error");
     }
@@ -356,7 +377,8 @@ export function App() {
       );
       await refreshAll();
     } catch (error) {
-      setFeedbackState(getErrorMessage(error, "目标巡检失败"), "error");
+      setFeedbackState(`${channelName} 检查失败，详情见执行日志。`, "error");
+      await Promise.allSettled([refreshChannels(), refreshLogs(logPage), refreshDiagnostics()]);
     } finally {
       setRowAction(null);
     }
@@ -455,31 +477,74 @@ export function App() {
   }
 
   async function runDiagnostics(): Promise<void> {
+    if (diagnosticsRunRef.current) return;
+    diagnosticsRunRef.current = true;
     setRunningDiagnostics(true);
-    setFeedbackState("正在执行网络诊断...", "pending");
+    setFeedbackState("各项诊断正在并行检测，结果会逐项更新。", "pending");
+    const startedAt = Date.now();
+    setDiagnostics((previous) => ({
+      taskInfo: previous?.taskInfo ?? { registered: false, state: "--", lastRunTime: "--", lastResult: "--" },
+      items: DIAGNOSTIC_NAMES.map((name) => ({ name, status: "running", detail: "正在检测…", checkedAt: new Date().toISOString(), durationMs: 0 }))
+    }));
 
     try {
-      setDiagnostics(await api<DiagnosticsResponse>("/diagnostics/run", { method: "POST" }));
-      setFeedbackState("诊断已更新。", "success");
+      const response = await fetch(`${API_BASE}/diagnostics/stream`, { method: "POST" });
+      if (!response.ok || !response.body) throw new Error("无法连接诊断服务。");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      const consume = (line: string) => {
+        if (!line.trim()) return;
+        const event = JSON.parse(line) as { type: string; item?: DiagnosticStatus; data?: DiagnosticsResponse; message?: string };
+        if (event.type === "error") throw new Error(event.message || "诊断失败");
+        if (event.type === "item" && event.item) {
+          const item = event.item;
+          setDiagnostics((previous) => previous ? { ...previous, items: previous.items.map((entry) => entry.name === item.name ? item : entry) } : previous);
+        }
+        if (event.type === "done" && event.data) {
+          finished = true;
+          setDiagnostics(event.data);
+          const ok = event.data.items.filter((item) => item.status === "ok").length;
+          const failed = event.data.items.filter((item) => item.status === "error" || item.status === "timeout").length;
+          const unknown = event.data.items.filter((item) => item.status === "unknown").length;
+          setFeedbackState(`诊断完成：${ok} 项正常，${failed} 项异常，${unknown} 项未确认。`, failed ? "error" : unknown ? "neutral" : "success");
+        }
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) { consume(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); }
+        if (done) break;
+      }
+      consume(buffer);
+      if (!finished) throw new Error("诊断连接中断，请重试。");
     } catch (error) {
+      setDiagnostics((previous) => previous ? { ...previous, items: previous.items.map((item) => item.status === "running" ? { ...item, status: "error", detail: "诊断连接中断，请重新运行诊断。", durationMs: Date.now() - startedAt } : item) } : previous);
       setFeedbackState(getErrorMessage(error, "运行诊断失败"), "error");
     } finally {
+      diagnosticsRunRef.current = false;
       setRunningDiagnostics(false);
     }
   }
 
   async function cleanupHistory(): Promise<void> {
+    const category = CLEANUP_CATEGORIES.find((item) => item.value === cleanupCategory)!;
+    const range = CLEANUP_RANGE_OPTIONS.find((item) => item.days === cleanupDays)?.label;
+    if (!window.confirm(`确认清理“${category.label}”？\n范围：${range}。${cleanupDays ? "仅删除保留范围之外的记录。" : "将删除此类别的全部记录。"}\n监控目标、账号设置和视频去重记录保留。此操作不可撤销。`)) return;
     setCleaningHistory(true);
-    setFeedbackState(`正在按“${formatRetentionLabel(settings.history.retentionDays)}”清理历史...`, "pending");
+    setFeedbackState(`正在清理${category.label}…`, "pending");
 
     try {
-      await api("/history/cleanup", {
+      const result = await api<CleanupResult>("/records/cleanup", {
         method: "POST",
-        body: JSON.stringify({ days: settings.history.retentionDays })
+        body: JSON.stringify({ category: cleanupCategory, days: cleanupDays })
       });
-      setFeedbackState("历史记录已按当前保留范围清理。", "success");
+      setFeedbackState(formatCleanupSummary(result, cleanupCategory, cleanupDays), result.warnings.length ? "error" : "success", false);
       setHistoryPage(1);
-      await Promise.allSettled([refreshHistory(1), refreshRecentHistory(), refreshDashboard()]);
+      setLogPage(1);
+      await Promise.allSettled([refreshHistory(1), refreshLogs(1), refreshRecentHistory(), refreshDashboard()]);
     } catch (error) {
       setFeedbackState(getErrorMessage(error, "清理历史失败"), "error");
     } finally {
@@ -487,8 +552,8 @@ export function App() {
     }
   }
 
-  function setFeedbackState(message: string, tone: FeedbackTone): void {
-    setFeedback({ message, tone });
+  function setFeedbackState(message: string, tone: FeedbackTone, truncate = true): void {
+    setFeedback({ message: truncate && message.length > 160 ? `${message.slice(0, 157)}…` : message, tone });
   }
 
   const sortedChannels = sortChannels(channels, channelSort);
@@ -1027,34 +1092,34 @@ export function App() {
                 </div>
               </section>
 
-              <section className="surface-card settings-card-surface">
+              <section className="surface-card settings-card-surface settings-card-wide">
                 <div className="surface-card-header">
                   <div>
-                    <h2>历史记录设置</h2>
-                    <p>历史清理入口移到这里，并保留范围选项。</p>
+                    <h2>记录与日志清理</h2>
+                    <p>统一清理推送记录、执行日志和文本运行日志，按类别和保留范围执行。</p>
                   </div>
                 </div>
                 <div className="surface-card-body settings-form-grid">
-                  <FieldBlock label="历史保留时间范围">
-                    <select
-                      value={String(settings.history.retentionDays)}
-                      onChange={(event) => updateSettingsDraft((prev) => ({ ...prev, history: { ...prev.history, retentionDays: Number(event.target.value) } }))}
-                    >
-                      {HISTORY_CLEANUP_OPTIONS.map((option) => (
-                        <option key={option.days} value={option.days}>
-                          {option.label}
-                        </option>
-                      ))}
+                  <FieldBlock label="清理类别">
+                    <select value={cleanupCategory} disabled={cleaningHistory} onChange={(event) => setCleanupCategory(event.target.value as CleanupCategory)}>
+                      {CLEANUP_CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                     </select>
+                    <small>{CLEANUP_CATEGORIES.find((item) => item.value === cleanupCategory)?.detail}</small>
+                  </FieldBlock>
+                  <FieldBlock label="清理范围">
+                    <select value={cleanupDays} disabled={cleaningHistory} onChange={(event) => setCleanupDays(Number(event.target.value))}>
+                      {CLEANUP_RANGE_OPTIONS.map((option) => <option key={option.days} value={option.days}>{option.label}</option>)}
+                    </select>
+                    <small>仅删除范围之外的记录，无法确定日期的旧记录保留；清空全部时才一起删除。监控目标、账号设置和视频去重记录保留。</small>
                   </FieldBlock>
                   <div className="history-inline-card">
-                    <span>数据条目</span>
-                    <strong>{historyTotal}</strong>
+                    <span>当前记录</span>
+                    <strong>推送历史 {historyTotal} 条 · 执行日志 {logTotal} 条</strong>
                   </div>
                 </div>
                 <div className="surface-card-footer">
                   <button className="soft-button" disabled={cleaningHistory} onClick={() => void cleanupHistory()}>
-                    {cleaningHistory ? "清理中..." : "清除历史记录"}
+                    {cleaningHistory ? "清理中..." : "清理所选记录"}
                   </button>
                 </div>
               </section>
@@ -1062,14 +1127,22 @@ export function App() {
               <section className="surface-card settings-card-surface settings-card-wide">
                 <div className="surface-card-header split-header">
                   <div>
-                    <h2>网络诊断</h2>
-                    <p>外网测试只展示可读摘要，不再暴露原始网页源码。</p>
+                    <h2>网络与抓取诊断</h2>
+                    <p>各项并行检测，结果逐项更新。蓝色检测中、绿色正常、红色失败、橙色超时。</p>
                   </div>
-                  <button className="soft-button" disabled={runningDiagnostics} onClick={() => void runDiagnostics()}>
-                    {runningDiagnostics ? "诊断中..." : "运行诊断"}
+                  <button className="soft-button" disabled={runningDiagnostics || savingFirefoxProfile} onClick={() => void runDiagnostics()}>
+                    {runningDiagnostics ? `检测中 ${diagnostics?.items.filter((item) => item.status !== "running").length ?? 0}/${DIAGNOSTIC_NAMES.length}` : "运行诊断"}
                   </button>
                 </div>
                 <div className="surface-card-body diagnostic-stack">
+                  <FieldBlock label="Firefox 配置（选择后自动保存）">
+                    <select value={firefoxProfiles?.selectedPath ?? ""} disabled={!firefoxProfiles || savingFirefoxProfile || runningDiagnostics} onChange={(event) => void selectFirefoxProfile(event.target.value)}>
+                      <option value="">自动：Firefox 默认配置</option>
+                      {firefoxProfiles?.selectedPath && !firefoxProfiles.profiles.some((item) => item.path === firefoxProfiles.selectedPath) ? <option value={firefoxProfiles.selectedPath}>原配置已不存在，请重新选择</option> : null}
+                      {firefoxProfiles?.profiles.map((item) => <option key={item.path} value={item.path}>{item.name}{item.isDefault ? "（默认）" : ""} · {item.path.split(/[\\/]/).pop()}</option>)}
+                    </select>
+                    <small style={{ overflowWrap: "anywhere" }}>与 Firefox 的 about:profiles 页面中“正在使用”的配置一致。当前读取：{firefoxProfiles?.selectedPath ?? firefoxProfiles?.automaticPath ?? "尚未定位"}</small>
+                  </FieldBlock>
                   {diagnostics && diagnostics.items.length > 0 ? (
                     <div className="diagnostic-list">
                       {diagnostics.items.map((item) => (
@@ -1114,14 +1187,16 @@ function SidebarStatusCard(props: { label: string; value: string; hint?: string;
 
 function ChannelAvatar(props: { channel: Channel; enabled: boolean }) {
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const avatarVersion = props.channel.avatarUpdatedAt ?? "";
-  const avatarSrc = `${API_BASE}/channels/${props.channel.id}/avatar${avatarVersion ? `?v=${encodeURIComponent(avatarVersion)}` : ""}`;
+  const avatarSrc = `${API_BASE}/channels/${props.channel.id}/avatar?v=${encodeURIComponent(avatarVersion)}&attempt=${attempt}`;
 
   useEffect(() => {
     setFailed(false);
+    setAttempt(0);
   }, [props.channel.id, props.enabled, avatarVersion]);
 
-  if (!props.enabled || !props.channel.avatarUpdatedAt || failed) {
+  if (!props.enabled || failed) {
     return <div className="row-avatar">▶</div>;
   }
 
@@ -1131,7 +1206,7 @@ function ChannelAvatar(props: { channel: Channel; enabled: boolean }) {
         className="channel-avatar-image"
         src={avatarSrc}
         alt={props.channel.name}
-        onError={() => setFailed(true)}
+        onError={() => { if (attempt < 2) setAttempt(attempt + 1); else setFailed(true); }}
       />
     </div>
   );
@@ -1258,15 +1333,17 @@ function LogList(props: { items: LogRecord[] }) {
 
 function DiagnosticRow(props: { item: DiagnosticStatus }) {
   return (
-    <article className="diagnostic-row">
+    <article className={`diagnostic-row diagnostic-${props.item.status}`} aria-live="polite">
       <div>
         <h3>{props.item.name}</h3>
         <p>{formatDiagnosticDetail(props.item.detail)}</p>
       </div>
       <div className="diagnostic-meta">
-        <span>{getDiagnosticStatusLabel(props.item.status)}</span>
-        <span>{props.item.durationMs} ms</span>
-        <span>{formatLocal(props.item.checkedAt)}</span>
+        <span className={`diagnostic-badge diagnostic-badge-${props.item.status}`}>
+          {props.item.status === "running" ? <span className="diagnostic-spinner" aria-hidden="true" /> : <span aria-hidden="true">{props.item.status === "ok" ? "✓" : props.item.status === "unknown" ? "?" : "!"}</span>}
+          {getDiagnosticStatusLabel(props.item.status)}
+        </span>
+        {props.item.status !== "running" ? <><span>{props.item.durationMs} ms</span><span>{formatLocal(props.item.checkedAt)}</span></> : null}
       </div>
     </article>
   );
@@ -1407,6 +1484,10 @@ function formatDiagnosticDetail(detail: string): string {
 }
 
 function getDiagnosticStatusLabel(status: DiagnosticStatus["status"]): string {
+  if (status === "running") return "检测中";
+  if (status === "unknown") {
+    return "尚未确认";
+  }
   if (status === "ok") {
     return "正常";
   }
@@ -1502,9 +1583,6 @@ function buildPageNumbers(currentPage: number, totalPages: number): number[] {
   return [...pages].filter((item) => item >= 1 && item <= totalPages).sort((a, b) => a - b);
 }
 
-function formatRetentionLabel(days: number): string {
-  return HISTORY_CLEANUP_OPTIONS.find((item) => item.days === days)?.label ?? `保留最近 ${days} 天`;
-}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;

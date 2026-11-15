@@ -1,5 +1,5 @@
 ﻿import type { DatabaseSync as NodeDatabaseSync } from "node:sqlite";
-import type { Channel, DashboardResponse, DeliveryRecord, DiagnosticsResponse, HistoryRecord, LogRecord, VideoRecord } from "@shared/types";
+import type { Channel, CleanupCategory, DashboardResponse, DeliveryRecord, DiagnosticsResponse, HistoryRecord, LogRecord, VideoRecord } from "@shared/types";
 import { makeId } from "@shared/utils";
 
 const { DatabaseSync } = module.require("node:sqlite") as {
@@ -88,6 +88,7 @@ export class Storage {
 
     this.ensureColumn("channels", "avatar_path", "TEXT");
     this.ensureColumn("channels", "avatar_updated_at", "TEXT");
+    this.ensureColumn("deliveries", "created_at", "TEXT");
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -293,24 +294,35 @@ export class Storage {
     this.db
       .prepare(`
         INSERT INTO deliveries (
-          id, video_id, tg_status, sent_at, retry_count, error_message, message_preview
+        id, video_id, tg_status, sent_at, retry_count, error_message, message_preview, created_at
         ) VALUES (
-          @id, @videoId, @tgStatus, @sentAt, @retryCount, @errorMessage, @messagePreview
+        @id, @videoId, @tgStatus, @sentAt, @retryCount, @errorMessage, @messagePreview, @createdAt
         )
       `)
       .run({
         id: makeId("del"),
+        createdAt: new Date().toISOString(),
         ...delivery
       });
   }
 
-  cleanupHistoryBefore(cutoffIso: string): void {
-    this.db.prepare("DELETE FROM history WHERE datetime(created_at) < datetime(?)").run(cutoffIso);
-    this.db.prepare("DELETE FROM deliveries WHERE sent_at IS NOT NULL AND datetime(sent_at) < datetime(?)").run(cutoffIso);
-  }
-
-  cleanupExpiredHistory(): void {
-    this.db.prepare("DELETE FROM history WHERE datetime(expire_at) < datetime('now')").run();
+  cleanupRecords(category: CleanupCategory, cutoff: string | null): { history: number; deliveries: number; execution: number } {
+    const counts = { history: 0, deliveries: 0, execution: 0 };
+    const remove = (table: string, timestamp: string) => Number(cutoff
+      ? this.db.prepare(`DELETE FROM ${table} WHERE datetime(${timestamp}) < datetime(?)`).run(cutoff).changes
+      : this.db.prepare(`DELETE FROM ${table}`).run().changes);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (category === "push" || category === "all") {
+        // Old failed records without a known timestamp are preserved by range
+        // cleanup. Never infer a delivery's age from the video's age.
+        counts.deliveries = cutoff ? Number(this.db.prepare("DELETE FROM deliveries WHERE datetime(COALESCE(sent_at, created_at)) < datetime(?)").run(cutoff).changes) : remove("deliveries", "sent_at");
+        counts.history = remove("history", "created_at");
+      }
+      if (category === "execution" || category === "all") counts.execution = remove("execution_logs", "created_at");
+      this.db.exec("COMMIT");
+      return counts;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
 
   saveDiagnostics(response: DiagnosticsResponse): void {

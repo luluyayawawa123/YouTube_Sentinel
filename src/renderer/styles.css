@@ -232,6 +232,11 @@ textarea {
 .sidebar-status-card.multiline strong {
   font-size: 12px;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .tone-neutral {
@@ -303,6 +308,7 @@ textarea {
   position: relative;
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .feedback-pill {
@@ -316,6 +322,16 @@ textarea {
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.feedback-pill span:last-child {
+  overflow: hidden;
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .feedback-pill.pending {
@@ -881,6 +897,22 @@ textarea {
   margin-top: 6px;
 }
 
+.diagnostic-row { border-left: 4px solid #94a3b8; }
+.diagnostic-row.diagnostic-running { border-left-color: #2563eb; background: #eff6ff; }
+.diagnostic-row.diagnostic-ok { border-left-color: #15803d; background: #f0fdf4; }
+.diagnostic-row.diagnostic-error { border-left-color: #dc2626; background: #fef2f2; }
+.diagnostic-row.diagnostic-timeout { border-left-color: #d97706; background: #fffbeb; }
+.diagnostic-row.diagnostic-unknown { border-left-color: #64748b; background: #f8fafc; }
+.diagnostic-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+.diagnostic-badge-running { color: #1d4ed8; background: #dbeafe; }
+.diagnostic-badge-ok { color: #166534; background: #dcfce7; }
+.diagnostic-badge-error { color: #b91c1c; background: #fee2e2; }
+.diagnostic-badge-timeout { color: #92400e; background: #fef3c7; }
+.diagnostic-badge-unknown { color: #475569; background: #e2e8f0; }
+.diagnostic-spinner { width: 12px; height: 12px; border: 2px solid #93c5fd; border-top-color: #1d4ed8; border-radius: 50%; animation: diagnostic-spin .8s linear infinite; flex-shrink: 0; }
+@keyframes diagnostic-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .diagnostic-spinner { animation: none; } }
+
 .meta-error {
   color: var(--danger);
 }
@@ -945,6 +977,8 @@ textarea {
   margin-top: 8px;
   color: var(--text);
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .empty-state {

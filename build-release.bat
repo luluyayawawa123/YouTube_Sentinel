@@ -9,6 +9,15 @@ set "NO_UPDATE_NOTIFIER=1"
 set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
 set "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/"
 
+if not exist "%ROOT%bin\yt-dlp.exe" (
+  echo Missing bin\yt-dlp.exe. Release cancelled.
+  goto :fail
+)
+if not exist "%ROOT%bin\deno.exe" (
+  echo Missing bin\deno.exe. Release cancelled.
+  goto :fail
+)
+
 echo Cleaning output directory...
 call :remove_dir "%DIST_DIR%"
 if exist "%DIST_DIR%" (

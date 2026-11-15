@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RuntimePaths } from "@worker/runtime";
+import type { DiagnosticStatus } from "@shared/types";
+import { getFirefoxSource } from "@shared/firefox";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,16 +29,76 @@ function getBinaryPath(paths: RuntimePaths): string {
 async function runYtDlp(paths: RuntimePaths, args: string[]): Promise<string> {
   const binaryPath = getBinaryPath(paths);
   if (!existsSync(binaryPath)) {
-    throw new Error("Missing bin/yt-dlp.exe");
+    throw new Error("缺少 bin/yt-dlp.exe，请补齐软件运行文件。");
   }
 
-  const { stdout } = await execFileAsync(binaryPath, args, {
-    cwd: paths.rootDir,
-    windowsHide: true,
-    maxBuffer: 1024 * 1024 * 10
-  });
+  const denoPath = join(paths.binDir, "deno.exe");
+  const firefoxSource = getFirefoxSource(paths.configDir);
+  const options = ["--encoding", "utf-8"];
+  if (existsSync(denoPath)) {
+    options.push("--js-runtimes", `deno:${denoPath}`);
+  }
+  // Re-extract live Firefox cookies each time; no exported file can go stale.
+  // An explicit user profile root also works for the SYSTEM scheduled worker.
+  if (firefoxSource) {
+    options.push("--cookies-from-browser", `firefox:${firefoxSource}`);
+  }
 
-  return stdout;
+  try {
+    const { stdout } = await execFileAsync(binaryPath, [...options, ...args], {
+      cwd: paths.rootDir,
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024 * 64
+    });
+    return stdout;
+  } catch (error) {
+    const failure = error as Error & { stderr?: string; stdout?: string; killed?: boolean; code?: string | number; signal?: string };
+    const detail = failure.stderr || failure.message || "未知错误";
+    const verificationRequired = /confirm you.{0,12}re not a bot|sign in to confirm/i.test(detail);
+    let message: string;
+    if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      message = "视频元数据量超过处理上限，未能完成读取。这不是 Firefox 登录失败。";
+    } else if (verificationRequired) {
+      message = `YouTube 要求登录验证。${firefoxSource ? "已自动读取 Firefox 当前 Cookies，请确认设置中所选配置与 Firefox 正在使用的一致，再确认 YouTube 登录及网页验证。" : "尚未确定 Firefox 配置，请打开一次软件界面，在设置的诊断区域选择已登录 YouTube 的 Firefox 配置。"}${existsSync(denoPath) ? "" : "同时缺少 bin/deno.exe，请补齐运行时。"}`;
+    } else if (/could not find firefox cookies database|failed to load cookies|unable to open database|could not copy.*cookie/i.test(detail)) {
+      message = "无法读取 Firefox 登录状态，请确认本机 Firefox 已登录 YouTube；若浏览器正在占用数据，关闭 Firefox 后重试。软件会在下次巡检自动重新读取，无需导出文件。";
+    } else if (failure.killed) {
+      message = "YouTube 数据获取超时（120 秒），请检查网络后重试。";
+    } else if (/No supported JavaScript runtime/i.test(detail) && !existsSync(denoPath)) {
+      message = "缺少 JavaScript 运行时，请将 deno.exe 放到软件 bin 目录后重新巡检。";
+    } else {
+      const clean = (value: string) => value.replace(/\x1b\[[0-9;]*m/g, "").replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[已隐藏]@");
+      // Never display a truncated metadata JSON as an error message.
+      const stdout = failure.stdout?.trim() ?? "";
+      const output = clean(`${failure.stderr ?? ""}\n${/^(?:\{|\[)/.test(stdout) ? "" : stdout}`).trim();
+      const errorLines = output.split(/\r?\n/).filter((line) => /^\s*ERROR:/i.test(line)).join("\n");
+      const exit = typeof failure.code === "number" ? `${failure.code} / 0x${(failure.code >>> 0).toString(16).toUpperCase()}` : failure.code ?? "未知";
+      const reason = errorLines || output || clean(failure.message || "内核没有输出错误说明");
+      message = `yt-dlp 执行失败（退出码 ${exit}${failure.signal ? `，信号 ${failure.signal}` : ""}）：${reason.slice(-1800)}`;
+    }
+    throw new Error(message);
+  }
+}
+
+export async function diagnoseYtDlp(paths: RuntimePaths, onProgress?: (item: DiagnosticStatus) => void): Promise<DiagnosticStatus[]> {
+  return Promise.all([["yt-dlp", "yt-dlp.exe"], ["Deno 运行时", "deno.exe"]].map(async ([name, file]) => {
+    const start = Date.now();
+    let item: DiagnosticStatus;
+    try {
+      const { stdout } = await execFileAsync(join(paths.binDir, file), ["--version"], {
+        windowsHide: true, encoding: "utf8", timeout: 10_000
+      });
+      item = { name, status: "ok", detail: stdout.trim(), checkedAt: new Date().toISOString(), durationMs: Date.now() - start };
+    } catch (error) {
+      const failure = error as Error & { code?: string | number; stderr?: string; stdout?: string };
+      const exit = typeof failure.code === "number" ? `0x${(failure.code >>> 0).toString(16).toUpperCase()}` : failure.code ?? "未知";
+      item = { name, status: "error", detail: `bin/${file} 无法运行（${exit}）：${(failure.stderr || failure.stdout || failure.message).trim().slice(-1400)}`, checkedAt: new Date().toISOString(), durationMs: Date.now() - start };
+    }
+    onProgress?.(item);
+    return item;
+  }));
 }
 
 export async function resolveChannelInfo(paths: RuntimePaths, url: string): Promise<ResolvedChannel> {
@@ -94,6 +156,18 @@ export interface SubtitleCandidate {
   ext: string;
 }
 
+export async function verifyYoutubeLogin(paths: RuntimePaths): Promise<void> {
+  // The subscriptions extractor requires account cookies. Fetch zero videos;
+  // this only validates access to the authenticated feed.
+  const raw = await runYtDlp(paths, [
+    "--flat-playlist", "--playlist-items", "0", "--skip-download", "--dump-single-json", ":ytsubs"
+  ]);
+  const parsed = JSON.parse(raw);
+  if (parsed._type !== "playlist" || !/^(?:FE)?subscriptions$/i.test(String(parsed.id ?? ""))) {
+    throw new Error("登录检测未获得有效的订阅页响应，暂时无法确认登录状态。");
+  }
+}
+
 export interface VideoMetadata {
   title: string;
   description: string;
@@ -105,7 +179,12 @@ export interface VideoMetadata {
 }
 
 export async function getVideoMetadata(paths: RuntimePaths, url: string): Promise<VideoMetadata> {
-  const raw = await runYtDlp(paths, ["--dump-single-json", "--skip-download", url]);
+  const raw = await runYtDlp(paths, [
+    "--skip-download", "--no-playlist",
+    "--extractor-args", "youtube:skip=translated_subs",
+    "--print", "%(.{title,description,webpage_url,upload_date,timestamp,channel,uploader,chapters,subtitles,automatic_captions})j",
+    url
+  ]);
   const parsed = JSON.parse(raw);
 
   return {

@@ -2,6 +2,8 @@ import { join } from "node:path";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { app, BrowserWindow, net, session, shell } from "electron";
 import { startWorkerServer } from "@worker/index";
+import { rememberFirefoxSource } from "@shared/firefox";
+import { resolveRootDir } from "@worker/runtime";
 
 const isWorkerMode = process.argv.includes("--worker");
 const isDevSourceMode = process.env.YTS_DEV_SOURCE === "1";
@@ -31,6 +33,11 @@ if (isWorkerMode) {
   }
 
   app.whenReady().then(async () => {
+    try {
+      rememberFirefoxSource(join(resolveRootDir(), "config"), app.getPath("appData"));
+    } catch (error) {
+      writeAppLog(`Firefox source registration failed: ${formatError(error)}`);
+    }
     const window = new BrowserWindow({
       title: "油管哨兵",
       width: 1180,

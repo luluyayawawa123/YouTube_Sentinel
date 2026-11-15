@@ -1,12 +1,13 @@
 ﻿import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
-import type { AppSettings } from "@shared/types";
+import type { AppSettings, CleanupCategory } from "@shared/types";
 import { channelPayloadSchema, settingsSchema } from "@shared/validation";
 import { workWindowLabel } from "@shared/utils";
 import { resolvePort, resolveRuntimePaths, loadSettings, saveSettings } from "@worker/runtime";
 import { PollScheduler } from "@worker/scheduler";
 import { WorkerService } from "@worker/service";
 import { Storage } from "@worker/storage";
+import { getFirefoxProfiles, setFirefoxProfile } from "@shared/firefox";
 
 export interface WorkerController {
   close: () => void;
@@ -97,7 +98,7 @@ export async function startWorkerServer(): Promise<WorkerController> {
 
       const channelAvatarMatch = pathname.match(/^\/channels\/([^/]+)\/avatar$/);
       if (request.method === "GET" && channelAvatarMatch) {
-        const avatar = service.getAvatarFile(channelAvatarMatch[1]);
+        const avatar = await service.getAvatarFile(channelAvatarMatch[1]);
         if (!avatar) {
           sendJson(response, 404, { ok: false, error: "Avatar not found" });
           return;
@@ -109,6 +110,17 @@ export async function startWorkerServer(): Promise<WorkerController> {
 
       if (request.method === "GET" && pathname === "/settings") {
         sendJson(response, 200, { ok: true, data: settings });
+        return;
+      }
+
+      if (request.method === "GET" && pathname === "/firefox-profiles") {
+        sendJson(response, 200, { ok: true, data: getFirefoxProfiles(paths.configDir) });
+        return;
+      }
+      if (request.method === "PUT" && pathname === "/firefox-profiles") {
+        const body = await readJson(request) as { profilePath?: unknown };
+        if (body.profilePath !== null && typeof body.profilePath !== "string") throw new Error("Firefox 配置参数无效");
+        sendJson(response, 200, { ok: true, data: setFirefoxProfile(paths.configDir, body.profilePath as string | null) });
         return;
       }
 
@@ -128,7 +140,6 @@ export async function startWorkerServer(): Promise<WorkerController> {
               monitor: "next_poll",
               ai: "immediate",
               telegram: "immediate",
-              history: "immediate",
               ui: "immediate"
             }
           }
@@ -162,16 +173,28 @@ export async function startWorkerServer(): Promise<WorkerController> {
         return;
       }
 
-      if (request.method === "POST" && pathname === "/history/cleanup") {
-        const body = await readJson(request) as { days?: number };
-        service.cleanupHistoryByDays(Number(body.days));
-        sendJson(response, 200, { ok: true, data: true });
-        return;
-      }
-
       if (request.method === "GET" && pathname === "/diagnostics") {
         const diagnostics = await service.getDiagnostics();
         sendJson(response, 200, { ok: true, data: diagnostics });
+        return;
+      }
+
+      if (request.method === "POST" && pathname === "/records/cleanup") {
+        const body = await readJson(request) as { category?: unknown; days?: unknown };
+        if (typeof body.category !== "string" || typeof body.days !== "number") throw new Error("清理参数无效");
+        sendJson(response, 200, { ok: true, data: await service.cleanupRecords(body.category as CleanupCategory, body.days) });
+        return;
+      }
+
+      if (request.method === "POST" && pathname === "/diagnostics/stream") {
+        response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
+        response.flushHeaders();
+        const emit = (event: unknown) => { if (!response.destroyed && !response.writableEnded) response.write(`${JSON.stringify(event)}\n`); };
+        try {
+          const data = await service.runDiagnostics((item) => emit({ type: "item", item }));
+          emit({ type: "done", data });
+        } catch (error) { emit({ type: "error", message: error instanceof Error ? error.message : "诊断失败" }); }
+        response.end();
         return;
       }
 

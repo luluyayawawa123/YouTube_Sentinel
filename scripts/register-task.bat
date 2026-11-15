@@ -24,6 +24,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$taskName = 'YouTube Sentinel Worker';" ^
   "$exePath = [System.IO.Path]::GetFullPath('%PS_EXE%');" ^
+  "$configDir = Join-Path ([System.IO.Path]::GetDirectoryName($exePath)) 'config';" ^
+  "New-Item -ItemType Directory -Path $configDir -Force | Out-Null;" ^
+  "@{profilesRoot = (Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $configDir 'firefox-source.json') -Encoding UTF8;" ^
   "$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue;" ^
   "if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null }" ^
   "$action = New-ScheduledTaskAction -Execute $exePath -Argument '--worker';" ^
